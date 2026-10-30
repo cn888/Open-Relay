@@ -1,19 +1,17 @@
 name: Build Open-WebUI IPA
 
-# Open-Relay：Open WebUI 的原生 iOS 客户端（纯 Swift）
-# 工程名带空格，scheme 是 "Open UI"
 on:
   workflow_dispatch:
     inputs:
       runner:
         description: 'macOS runner'
         required: false
-        default: 'macos-15'
+        default: 'macos-26'
 
 jobs:
   ipa:
-    runs-on: ${{ github.event.inputs.runner || 'macos-15' }}
-    timeout-minutes: 90
+    runs-on: ${{ github.event.inputs.runner || 'macos-26' }}
+    timeout-minutes: 120
 
     steps:
       - uses: actions/checkout@v4
@@ -26,29 +24,32 @@ jobs:
           xcodebuild -version
           xcrun --sdk iphoneos --show-sdk-version
 
-      - name: 查看 scheme
-        run: xcodebuild -list -project "Open UI.xcodeproj" 2>&1 | tee build.log || true
-
       - name: 编译（不签名）
         run: |
           set -o pipefail
+          # -skipPackagePluginValidation: mlx-swift 的 CudaBuild / swiftterm 的
+          #   SwiftTermBuildInfoPlugin 是构建插件，未签名构建下验证会失败。
+          # ENABLE_USER_SCRIPT_SANDBOXING=NO: 关掉用户脚本沙盒，配合插件放行。
           xcodebuild build \
             -project "Open UI.xcodeproj" \
             -scheme "Open UI" \
             -configuration Release \
             -destination 'generic/platform=iOS' \
             -derivedDataPath build \
+            -skipPackagePluginValidation \
+            -skipMacroValidation \
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY="" \
             ARCHS=arm64 \
             ONLY_ACTIVE_ARCH=YES \
-            2>&1 | tee -a build.log | tail -n 70
+            ENABLE_USER_SCRIPT_SANDBOXING=NO \
+            2>&1 | tee build.log | tail -n 70
 
       - name: 打包 IPA
         run: |
           APP=$(find build/Build/Products/Release-iphoneos -maxdepth 1 -name '*.app' | head -n 1)
-          test -n "$APP" || { echo "没有 .app"; ls -R build/Build/Products | head -40; exit 1; }
+          test -n "$APP" || { echo "没有 .app"; find build/Build/Products -name '*.app' | head; exit 1; }
           echo "app: $APP"
           rm -rf Payload OpenRelay-unsigned.ipa
           mkdir -p Payload
