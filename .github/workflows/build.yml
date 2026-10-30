@@ -24,24 +24,28 @@ jobs:
           xcodebuild -version
           xcrun --sdk iphoneos --show-sdk-version
 
-      - name: 只保留 iOS 目标（移除 Watch 依赖）
+      - name: 预解析依赖
         run: |
-          sed -i 's/OpenRelayWatch.*= {isa = PBXBuildFile.*};//' "/tmp/nonexistent" 2>/dev/null || true
-          echo "== 当前 scheme 的构建目标 =="
-          xcodebuild -list -project "Open UI.xcodeproj" 2>&1 | head -40
+          xcodebuild -resolvePackageDependencies \
+            -project "Open UI.xcodeproj" \
+            -scheme "Open UI" \
+            -skipPackagePluginValidation \
+            -skipMacroValidation 2>&1 | tail -20
 
-      - name: 编译（只要 iPhone App，不签名）
+      - name: 编译（串行，避免插件产物竞态）
         run: |
           set -o pipefail
-          # 只构建 app target，避免 watchOS 扩展参与
-          # -skipPackagePluginValidation: mlx-swift CudaBuild / swiftterm 插件
-          # ENABLE_USER_SCRIPT_SANDBOXING=NO: 配合插件放行
+          # 关键点：
+          # -jobs 1             : SwiftTerm 的构建信息插件需要一个先生成的可执行文件，
+          #                       并行构建时会被抢跑导致 "Build input file cannot be found"
+          # -skipPackagePluginValidation / -skipMacroValidation : 未签名构建放行插件
           xcodebuild build \
             -project "Open UI.xcodeproj" \
-            -target "Open UI" \
+            -scheme "Open UI" \
             -configuration Release \
             -sdk iphoneos \
-            CONFIGURATION_BUILD_DIR="$(pwd)/out" \
+            -derivedDataPath build \
+            -jobs 1 \
             -skipPackagePluginValidation \
             -skipMacroValidation \
             CODE_SIGNING_ALLOWED=NO \
@@ -49,14 +53,13 @@ jobs:
             CODE_SIGN_IDENTITY="" \
             ARCHS=arm64 \
             ONLY_ACTIVE_ARCH=YES \
-            ENABLE_USER_SCRIPT_SANDBOXING=YES \
-            SKIP_INSTALL=NO \
+            ENABLE_USER_SCRIPT_SANDBOXING=NO \
             2>&1 | tee build.log | tail -n 70
 
       - name: 打包 IPA
         run: |
-          APP=$(find out -maxdepth 1 -name '*.app' | head -n 1)
-          test -n "$APP" || { echo "没有 .app"; find . -name '*.app' -not -path './build/*' | head; exit 1; }
+          APP=$(find build/Build/Products/Release-iphoneos -maxdepth 1 -name '*.app' | head -n 1)
+          test -n "$APP" || { echo "没有 .app"; find build/Build/Products -name '*.app' | head; exit 1; }
           echo "app: $APP"
           rm -rf Payload OpenRelay-unsigned.ipa
           mkdir -p Payload
