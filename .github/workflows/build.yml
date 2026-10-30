@@ -1,0 +1,75 @@
+name: Build Open-WebUI IPA
+
+# Open-Relay：Open WebUI 的原生 iOS 客户端（纯 Swift）
+# 工程名带空格，scheme 是 "Open UI"
+on:
+  workflow_dispatch:
+    inputs:
+      runner:
+        description: 'macOS runner'
+        required: false
+        default: 'macos-15'
+
+jobs:
+  ipa:
+    runs-on: ${{ github.event.inputs.runner || 'macos-15' }}
+    timeout-minutes: 90
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 选最新 Xcode
+        run: |
+          ls -d /Applications/Xcode*.app 2>/dev/null || true
+          NEWEST=$(ls -d /Applications/Xcode*.app 2>/dev/null | sort -V | tail -n 1)
+          [ -n "$NEWEST" ] && sudo xcode-select -s "$NEWEST"
+          xcodebuild -version
+          xcrun --sdk iphoneos --show-sdk-version
+
+      - name: 查看 scheme
+        run: xcodebuild -list -project "Open UI.xcodeproj" 2>&1 | tee build.log || true
+
+      - name: 编译（不签名）
+        run: |
+          set -o pipefail
+          xcodebuild build \
+            -project "Open UI.xcodeproj" \
+            -scheme "Open UI" \
+            -configuration Release \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            ARCHS=arm64 \
+            ONLY_ACTIVE_ARCH=YES \
+            2>&1 | tee -a build.log | tail -n 70
+
+      - name: 打包 IPA
+        run: |
+          APP=$(find build/Build/Products/Release-iphoneos -maxdepth 1 -name '*.app' | head -n 1)
+          test -n "$APP" || { echo "没有 .app"; ls -R build/Build/Products | head -40; exit 1; }
+          echo "app: $APP"
+          rm -rf Payload OpenRelay-unsigned.ipa
+          mkdir -p Payload
+          cp -R "$APP" Payload/
+          zip -qry OpenRelay-unsigned.ipa Payload
+          ls -lh OpenRelay-unsigned.ipa
+          /usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$APP/Info.plist" || true
+          /usr/libexec/PlistBuddy -c 'Print :MinimumOSVersion' "$APP/Info.plist" || true
+
+      - name: 上传 IPA
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: OpenRelay-ipa
+          path: OpenRelay-unsigned.ipa
+          retention-days: 7
+
+      - name: 上传日志
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log
+          path: build.log
+          retention-days: 3
